@@ -1,0 +1,6 @@
+*.swo
+*.swp
+.DS_Store
+.bundle/**
+Gemfile.lock
+vendor/**

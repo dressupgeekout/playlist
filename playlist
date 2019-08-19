@@ -1,0 +1,212 @@
+#!/usr/bin/env ruby
+#
+# Copyright (c) 2019 Charlotte Koch. All rights reserved.
+# 
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are
+# met:
+# 
+#   1. Redistributions of source code must retain the above copyright
+#   notice, this list of conditions and the following disclaimer.
+# 
+#   2.  Redistributions in binary form must reproduce the above copyright
+#   notice, this list of conditions and the following disclaimer in the
+#   documentation and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+# IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+# THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+# LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+# NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+require 'fileutils'
+
+require 'nokogiri'
+require 'taglib'
+
+########## ########## ########## ##########
+
+class AudioFile < Struct.new(:path, :title, :artist, :album)
+  def eql?(other)
+    return \
+      self.path == other.path && 
+      self.title == other.title && 
+      self.artist == other.artist &&
+      self.album == other.album
+  end
+end
+
+class PlaylistWriter < Struct.new(:tracks)
+  attr_reader :builder
+
+  def make_xml!
+    @builder = Nokogiri::XML::Builder.new do |xml|
+      xml.playlist(:version => "1", :xmlns => "http://xspf.org/ns/0/") {
+        xml.trackList {
+          self.tracks.each do |track|
+            xml.track {
+              xml.location(track.path)
+              xml.title(track.title) if not track.title.empty?
+              xml.creator(track.artist) if not track.artist.empty?
+              xml.album(track.album) if not track.album.empty?
+            }
+          end
+        }
+      }
+    end
+  end
+
+  def to_s
+    make_xml! if !@builder
+    return @builder.to_xml
+  end
+end
+
+class PlaylistReader
+  attr_reader :name
+
+  def initialize(name)
+    @playlist_name = name
+  end
+end
+
+########## ########## ########## ##########
+
+PROGNAME = File.basename($0)
+
+def warnx(str)
+  $stderr.puts("#{PROGNAME}: #{str}")
+end
+
+def usage
+  return <<EOF
+#{PROGNAME}: usage: #{PROGNAME} playlist-name cmd [options...]
+\t#{PROGNAME} playlist-name create
+\t#{PROGNAME} playlist-name add file [file...]
+\t#{PROGNAME} playlist-name delete
+\t#{PROGNAME} playlist-name show
+\t#{PROGNAME} playlist-name path
+EOF
+end
+
+def ensure_exists(path)
+  if not File.file?(path)
+    warnx("no such file: #{path}")
+    exit 1
+  end
+end
+
+def ensure_not_exists(path)
+  if File.file?(path)
+    warnx("#{path} already exists, aborting")
+    exit 1
+  end
+end
+
+def do_create
+  ensure_not_exists(@playlist_path)
+  FileUtils.mkdir_p(File.dirname(@playlist_path))
+  File.open(@playlist_path, "w") do
+    # touch
+  end
+end
+
+# XXX this currently wipes out the entire preexisting thing
+def do_add
+  file_paths = ARGV.dup
+
+  file_paths.map! { |path| File.expand_path(path) }
+  
+  file_paths.each do |path|
+    ensure_exists(path)
+  end
+
+  audiofiles = file_paths.map do |path|
+    af = nil # SCOPE
+    TagLib::FileRef.open(path) do |ref|
+      if ref.null?
+        warnx("#{path}: not an audio file?")
+        exit 1
+      end
+      warnx("parsing #{path}")
+      tags = ref.tag
+      af = AudioFile.new(path, tags.title, tags.artist, tags.album)
+    end
+
+    af
+  end
+
+  File.open(@playlist_path, "w") { |fd|
+    fd.puts(PlaylistWriter.new(audiofiles).to_s)
+  }
+end
+
+def do_delete
+  ensure_exists(@playlist_path)
+  FileUtils.remove_entry(@playlist_path)
+end
+
+def do_show
+  if not File.file?(@playlist_path)
+    warnx("no such playlist: #{@playlist_path}")
+    exit 1
+  end
+  $stdout.puts(File.read(@playlist_path))
+end
+
+def do_path
+  $stdout.puts(@playlist_path)
+end
+
+########## ########## ########## ##########
+
+PLAYLIST_CACHE = ENV["PLAYLIST_CACHE"] || File.expand_path("~/.config/playlist")
+
+if ARGV.length == 0
+  $stdout.puts(usage)
+  exit 0
+end
+
+playlist_name = ARGV.shift
+
+if not playlist_name
+  warnx("expected a playlist name")
+  $stderr.puts(usage)
+  exit 1
+end
+
+@playlist_path = File.join(PLAYLIST_CACHE, "#{playlist_name}.xspf")
+
+cmd = ARGV.shift
+
+if not cmd
+  warnx("expected a command")
+  $stderr.puts(usage)
+  exit 1
+end
+
+case cmd
+when "create"
+  do_create
+when "add"
+  do_add
+when "delete"
+  do_delete
+when "show"
+  do_show
+when "path"
+  do_path
+else
+  warnx("unknown command #{cmd.inspect}")
+  $stderr.puts(usage)
+  exit 1
+end
+
+exit 0
